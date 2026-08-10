@@ -227,7 +227,7 @@ def get_embedding(text: str) -> List[float]:
 
 
 def init_qdrant_collections():
-    """Initialize Qdrant collections."""
+    """Initialize Qdrant collections. Returns True on success, False on failure."""
     try:
         collections = qdrant_client.get_collections()
         collection_names = [c.name for c in collections.collections]
@@ -258,13 +258,36 @@ def init_qdrant_collections():
         else:
             logger.info(f"Collection {UPLOADS_COLLECTION} already exists")
 
+        return True
+
     except Exception as e:
-        logger.error(f"Qdrant initialization error: {e}")
-        raise
+        # Do NOT re-raise here. A transient Qdrant issue (wrong URL, cluster
+        # waking from pause, brief network blip) would otherwise crash the
+        # whole app at import time, before it can even serve /health. We log
+        # loudly and let the app boot; ensure_qdrant_ready() retries lazily
+        # before any request that actually needs Qdrant.
+        logger.error(f"Qdrant initialization error (app will still start): {e}")
+        return False
 
 
-# Initialize collections
-init_qdrant_collections()
+_qdrant_ready = False
+
+
+def ensure_qdrant_ready():
+    """Retry Qdrant collection init on-demand if startup init failed.
+
+    Cheap no-op once collections are confirmed to exist, so this is safe to
+    call at the top of any route that touches Qdrant.
+    """
+    global _qdrant_ready
+    if _qdrant_ready:
+        return True
+    _qdrant_ready = init_qdrant_collections()
+    return _qdrant_ready
+
+
+# Attempt collection init at startup, but never let it take the app down.
+_qdrant_ready = init_qdrant_collections()
 
 
 @app.route('/')
@@ -279,11 +302,19 @@ def serve_static(path):
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint."""
-    try:
-        qdrant_client.get_collections()
-        collection_info = qdrant_client.get_collection(COLLECTION_NAME)
+    """Health check endpoint. Never crashes - reports Qdrant status either way."""
+    qdrant_ok = ensure_qdrant_ready()
 
+    if not qdrant_ok:
+        return jsonify({
+            'status': 'degraded',
+            'timestamp': datetime.now().isoformat(),
+            'qdrant': 'unreachable',
+            'llm_model': OPENROUTER_MODEL_CANDIDATES[_current_model_index]
+        }), 503
+
+    try:
+        collection_info = qdrant_client.get_collection(COLLECTION_NAME)
         return jsonify({
             'status': 'healthy',
             'timestamp': datetime.now().isoformat(),
@@ -305,6 +336,12 @@ def health_check():
 def upload_document():
     """Upload and process a PDF document."""
     try:
+        if not ensure_qdrant_ready():
+            return jsonify({
+                'status': 'error',
+                'message': 'Storage service (Qdrant) is currently unreachable. Please try again shortly.'
+            }), 503
+
         if 'file' not in request.files:
             return jsonify({'status': 'error', 'message': 'No file uploaded'}), 400
 
@@ -400,6 +437,12 @@ def upload_document():
 def remove_document():
     """Remove uploaded document from Qdrant."""
     try:
+        if not ensure_qdrant_ready():
+            return jsonify({
+                'status': 'error',
+                'message': 'Storage service (Qdrant) is currently unreachable. Please try again shortly.'
+            }), 503
+
         data = request.get_json(silent=True) or {}
         session_id = data.get('session_id', '')
 
@@ -444,6 +487,12 @@ def remove_document():
 def chat():
     """Handle chat queries with RAG."""
     try:
+        if not ensure_qdrant_ready():
+            return jsonify({
+                'status': 'error',
+                'message': 'Storage service (Qdrant) is currently unreachable. Please try again shortly.'
+            }), 503
+
         data = request.get_json(silent=True) or {}
         question = data.get('question', '').strip()
         session_id = data.get('session_id', '')
