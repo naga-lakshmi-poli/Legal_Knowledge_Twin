@@ -44,19 +44,21 @@ if missing_vars:
 
 # --- OpenRouter chat model selection -----------------------------------------
 # Ordered by preference. Free-tier availability on OpenRouter rotates fairly
-# often, so this is a candidate list rather than a single hardcoded model.
+# often (models get added/retired without much notice), so this is a
+# candidate list rather than a single hardcoded model. Verified live against
+# openrouter.ai/models (filtered to Price: Free) as of Aug 2026 - if you hit
+# repeated 404s on all of these, re-check that page and update this list.
 # We do NOT make a live test call to any of these at startup - that burns
 # free-tier quota on every deploy/restart and can crash the app before it
 # ever serves a request. Instead we track the current preferred candidate,
 # and only fall through to the next one at REQUEST TIME if the current one
 # actually fails (quota exhausted, model retired, provider error, etc).
-# Check openrouter.ai/models (filter: Price -> Free) periodically and update
-# this list if any of these get pulled or renamed.
 OPENROUTER_MODEL_CANDIDATES = [
+    'nvidia/nemotron-3-ultra-550b-a55b:free',  # highest quality free model currently listed
     'openai/gpt-oss-20b:free',
-    'meta-llama/llama-4-maverick:free',
-    'deepseek/deepseek-r1-distill:free',
-    'openrouter/free',  # OpenRouter's own auto-router as a last-resort catch-all
+    'google/gemma-4-31b-it:free',
+    'nvidia/nemotron-3-nano-30b-a3b:free',
+    'openrouter/free',  # OpenRouter's own auto-router - last-resort catch-all
 ]
 
 # Index into OPENROUTER_MODEL_CANDIDATES of the model we currently believe works.
